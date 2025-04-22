@@ -1,5 +1,6 @@
 # winequality
-Projeto II - Aplicação de Métodos de Aprendizagem de Máquina
+Projeto II Uniaselvi Curso de Big Data e Inteligencia Analitica
+- Aplicação de Métodos de Aprendizagem de Máquina
 Análise Preditiva da Qualidade de Vinhos: Uma Abordagem com Machine Learning
 Este projeto apresenta uma análise abrangente e desenvolvimento de um sistema inteligente para avaliação e predição da qualidade de vinhos, utilizando técnicas avançadas de Machine Learning. O estudo combina diferentes abordagens de aprendizado de máquina para criar um sistema robusto de classificação e análise de vinhos, baseado em suas características físico-químicas.
 
