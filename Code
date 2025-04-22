@@ -1,0 +1,496 @@
+# Importando as bibliotecas necessárias
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, accuracy_score, classification_report
+from mlxtend.frequent_patterns import apriori, association_rules
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+import nltk
+import matplotlib.pyplot as plt
+import seaborn as sns
+from google.colab import drive
+
+# Download necessário para PLN
+nltk.download('punkt')
+nltk.download('stopwords')
+
+# Montando o Google Drive
+drive.mount('/content/drive')
+
+# Carregando os dados
+data = pd.read_csv('/content/drive/MyDrive/winequality-red.csv', sep=';', encoding='ISO-8859-1')
+
+# 1. PRÉ-PROCESSAMENTO DOS DADOS
+
+# Função para limpar e converter valores numéricos
+def clean_numeric(x):
+    if isinstance(x, str):
+        # Remove caracteres não numéricos, exceto ponto e vírgula
+        x = x.replace(',', '.')  # Substitui vírgula por ponto
+        # Remove pontos extras (mantém apenas o último)
+        if x.count('.') > 1:
+            parts = x.split('.')
+            x = ''.join(parts[:-1]) + '.' + parts[-1]
+    try:
+        return float(x)
+    except:
+        return np.nan
+
+# Limpando e convertendo todas as colunas numéricas
+numeric_columns = data.columns.drop('Qualidade') if 'Qualidade' in data.columns else data.columns
+for col in numeric_columns:
+    data[col] = data[col].apply(clean_numeric)
+print("Dimensões do dataset:", data.shape)
+print("\nPrimeiras linhas do dataset:")
+print(data.head())
+
+
+# Normalizando os dados
+scaler = StandardScaler()
+X = scaler.fit_transform(data.drop('Qualidade', axis=1))
+y = data['Qualidade']
+
+# Criando classificação binária (vinhos premiados vs não premiados)
+y_binary = (y >= 7).astype(int)
+
+# Dividindo os dados
+X_train, X_test, y_train, y_test = train_test_split(X, y_binary, test_size=0.2, random_state=42)
+
+# 2. REDE NEURAL ARTIFICIAL (TENSORFLOW)
+def criar_modelo_rna():
+    model = Sequential([
+        Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+        Dropout(0.3),
+        Dense(32, activation='relu'),
+        Dropout(0.2),
+        Dense(16, activation='relu'),
+        Dense(1, activation='sigmoid')
+    ])
+
+    model.compile(optimizer='adam',
+                 loss='binary_crossentropy',
+                 metrics=['accuracy'])
+    return model
+
+# Treinando o modelo RNA
+rna_model = criar_modelo_rna()
+history = rna_model.fit(X_train, y_train,
+                       epochs=100,
+                       batch_size=32,
+                       validation_split=0.2,
+                       verbose=1)
+plt.figure(figsize=(15, 5))
+
+# Gráfico de acurácia da RNA
+plt.subplot(1, 3, 1)
+plt.plot(history.history['accuracy'], label='Treino')
+plt.plot(history.history['val_accuracy'], label='Validação')
+plt.title('Acurácia da RNA')
+plt.legend()
+
+# 3. ALGORITMO DE AGRUPAMENTO (K-MEANS)
+# Encontrando o número ideal de clusters
+silhouette_scores = []
+K = range(2, 8)
+for k in K:
+    kmeans = KMeans(n_clusters=k, random_state=42)
+    kmeans.fit(X)
+    score = silhouette_score(X, kmeans.labels_)
+    silhouette_scores.append(score)
+
+# Aplicando K-means com o melhor número de clusters
+best_k = K[np.argmax(silhouette_scores)]
+kmeans = KMeans(n_clusters=best_k, random_state=42)
+cluster_labels = kmeans.fit_predict(X)
+
+plt.figure(figsize=(15, 5))
+
+# Gráfico de silhouette scores
+plt.subplot(1, 3, 2)
+plt.plot(K, silhouette_scores)
+plt.title('Silhouette Scores por número de clusters')
+plt.xlabel('Número de clusters')
+plt.ylabel('Silhouette Score')
+
+# Distribuição dos clusters
+plt.subplot(1, 3, 3)
+plt.hist(cluster_labels, bins=best_k)
+plt.title('Distribuição dos Clusters')
+plt.xlabel('Cluster')
+plt.ylabel('Número de vinhos')
+
+plt.tight_layout()
+plt.show()
+
+# 4. ALGORITMOS DE ASSOCIAÇÃO
+import numpy as np
+
+# Função para limpar e corrigir dados
+def limpar_dados(data):
+    data_limpa = data.copy()
+
+    # Corrigindo valores anômalos no Álcool
+    q1 = data_limpa['Alcool'].quantile(0.25)
+    q3 = data_limpa['Alcool'].quantile(0.75)
+    iqr = q3 - q1
+    lower_bound = q1 - (1.5 * iqr)
+    upper_bound = q3 + (1.5 * iqr)
+
+    data_limpa.loc[data_limpa['Alcool'] < lower_bound, 'Alcool'] = lower_bound
+    data_limpa.loc[data_limpa['Alcool'] > upper_bound, 'Alcool'] = upper_bound
+
+    return data_limpa
+
+# Aplicando a limpeza de dados
+data = limpar_dados(data)
+
+# Discretizando os dados para regras de associação
+def discretizar_dados(data):
+    data_disc = data.copy()
+    for column in data_disc.columns:
+        if column != 'Qualidade':
+            data_disc[column] = pd.qcut(data_disc[column], q=4, labels=['Baixo', 'Médio-Baixo', 'Médio-Alto', 'Alto'])
+    return data_disc
+
+data_disc = discretizar_dados(data)
+# Criando matriz binária para regras de associação
+data_encoded = pd.get_dummies(data_disc)
+
+# Função modificada para binarização dos dados
+def preparar_dados_para_apriori(data):
+    data_bin = data.copy()
+
+    # Definindo limites para cada característica
+    limites = {col: data[col].mean() for col in data.columns if col != 'Qualidade'}
+    limites['Qualidade'] = 7  # Limite para vinhos de alta qualidade
+
+    # Criando colunas binárias
+    for coluna, limite in limites.items():
+        data_bin[f'alto_{coluna}'] = (data[coluna] >= limite).astype(int)
+        data_bin[f'baixo_{coluna}'] = (data[coluna] < limite).astype(int)
+
+    # Removendo as colunas originais
+    data_bin = data_bin.drop(limites.keys(), axis=1)
+
+    return data_bin
+
+# Preparando dados para Apriori
+data_bin = preparar_dados_para_apriori(data)
+
+# Aplicando Apriori
+frequent_itemsets = apriori(data_bin,
+                          min_support=0.1,
+                          use_colnames=True)
+
+# Gerando regras de associação
+rules = association_rules(frequent_itemsets,
+                        metric="confidence",
+                        min_threshold=0.5)
+
+# Exibindo as regras mais relevantes
+print("\nRegras de Associação mais relevantes:")
+print(rules.sort_values('confidence', ascending=False).head(10))
+
+# Visualização das regras mais importantes
+plt.figure(figsize=(10, 6))
+plt.scatter(rules['support'], rules['confidence'], alpha=0.5)
+plt.xlabel('Suporte')
+plt.ylabel('Confiança')
+plt.title('Suporte vs Confiança nas Regras de Associação')
+plt.show()
+
+# Análise das características mais frequentes
+print("\nCaracterísticas mais frequentes em vinhos de alta qualidade:")
+high_quality_patterns = rules[rules['consequents'].apply(lambda x: 'alto_Qualidade' in str(x))]
+print(high_quality_patterns.sort_values('confidence', ascending=False).head(5))
+
+# Função para interpretar as regras
+def interpretar_regras(rules, n_rules=5):
+    print("\nInterpretação das principais regras encontradas:")
+    top_rules = rules.sort_values('confidence', ascending=False).head(n_rules)
+
+    for idx, rule in top_rules.iterrows():
+        antecedents = list(rule['antecedents'])
+        consequents = list(rule['consequents'])
+        print(f"\nSe um vinho tem: {', '.join(str(x) for x in antecedents)}")
+        print(f"Então provavelmente terá: {', '.join(str(x) for x in consequents)}")
+        print(f"Confiança: {rule['confidence']:.2f}")
+        print(f"Suporte: {rule['support']:.2f}")
+        print(f"Lift: {rule['lift']:.2f}")
+
+# Interpretando as regras
+interpretar_regras(rules)
+
+# Análise adicional das características dos vinhos de alta qualidade
+vinhos_alta_qualidade = data[data['Qualidade'] >= 7]
+print("\nEstatísticas dos vinhos de alta qualidade:")
+print(vinhos_alta_qualidade.describe())
+
+# Visualização da distribuição das características em vinhos de alta qualidade
+plt.figure(figsize=(15, 10))
+for i, coluna in enumerate(data.columns[:-1], 1):
+    plt.subplot(4, 3, i)
+    sns.kdeplot(data=data, x=coluna, hue='Qualidade', common_norm=False)
+    plt.title(f'Distribuição de {coluna}')
+plt.tight_layout()
+plt.show()
+
+# 5. PROCESSAMENTO DE LINGUAGEM NATURAL
+# Criando descrições textuais dos vinhos
+def criar_descricao_vinho(row):
+    descricao = []
+    if row['Alcool'] > 11:
+        descricao.append('alto teor alcoólico')
+    if row['Acidez Fixa'] > 7:
+        descricao.append('acidez elevada')
+    if row['Sulfato'] > 0.6:
+        descricao.append('sulfatos elevados')
+    if row['Qualidade'] >= 7:
+        descricao.append('alta qualidade')
+    return ' '.join(descricao)
+
+data['descricao'] = data.apply(criar_descricao_vinho, axis=1)
+
+# Análise de texto
+vectorizer = TfidfVectorizer(stop_words=stopwords.words('portuguese'))
+X_text = vectorizer.fit_transform(data['descricao'])
+
+# Função para prever qualidade do vinho
+def prever_qualidade_vinho(caracteristicas):
+    try:
+        # Convertendo características para array numpy
+        carac_array = np.array(caracteristicas).reshape(1, -1)
+
+        # Normalizando as características
+        carac_norm = scaler.transform(carac_array)
+
+        # Fazendo previsões
+        rna_pred = rna_model.predict(carac_norm)[0][0]
+        cluster = kmeans.predict(carac_norm)[0]
+
+        # Criando dicionário com as características
+        carac_dict = {
+            'Acidez Fixa': caracteristicas[0],
+            'Acidez Volátil': caracteristicas[1],
+            'Acido Citrico': caracteristicas[2],
+            'Açucar Residual': caracteristicas[3],
+            'Cloreto': caracteristicas[4],
+            'Dioxido de Enxofre Livre': caracteristicas[5],
+            'Dioxido de Enxofre Total': caracteristicas[6],
+            'Densidade': caracteristicas[7],
+            'pH': caracteristicas[8],
+            'Sulfato': caracteristicas[9],
+            'Alcool': caracteristicas[10]
+        }
+
+        # Gerando descrição
+        descricao = []
+        if carac_dict['Alcool'] > 11:
+            descricao.append('alto teor alcoólico')
+        if carac_dict['Acidez Fixa'] > 7:
+            descricao.append('acidez elevada')
+        if carac_dict['Sulfato'] > 0.6:
+            descricao.append('sulfatos elevados')
+
+        # Verificando se os valores estão dentro das faixas típicas
+        alertas = []
+        faixas_tipicas = {
+            'Acidez Fixa': (4.0, 16.0),
+            'Acidez Volátil': (0.1, 1.6),
+            'Acido Citrico': (0.0, 1.0),
+            'Açucar Residual': (0.6, 65.8),
+            'Cloreto': (0.009, 0.611),
+            'Dioxido de Enxofre Livre': (1, 289),
+            'Dioxido de Enxofre Total': (6, 440),
+            'Densidade': (0.98711, 1.03898),
+            'pH': (2.72, 4.01),
+            'Sulfato': (0.22, 2.0),
+            'Alcool': (8.0, 14.9)
+        }
+
+        for caracteristica, valor in carac_dict.items():
+            min_val, max_val = faixas_tipicas[caracteristica]
+            if valor < min_val or valor > max_val:
+                alertas.append(f"{caracteristica} está fora da faixa típica ({min_val:.3f} - {max_val:.3f})")
+
+        # Interpretando a probabilidade
+        if rna_pred >= 0.7:
+            qualidade = "Alta probabilidade de ser premiado"
+        elif rna_pred >= 0.5:
+            qualidade = "Probabilidade moderada de ser premiado"
+        else:
+            qualidade = "Baixa probabilidade de ser premiado"
+
+        return {
+            'Probabilidade de Premiação': float(rna_pred),
+            'Probabilidade (%)': float(rna_pred * 100),
+            'Interpretação': qualidade,
+            'Cluster': int(cluster),
+            'Descrição': ' '.join(descricao) if descricao else 'Características padrão',
+            'Alertas': alertas
+        }
+
+    except Exception as e:
+        return {
+            'erro': f"Erro ao processar a previsão: {str(e)}",
+            'tipo_erro': type(e).__name__
+        }
+
+# 6. FUNÇÃO PARA PREVER NOVOS VINHOS
+def prever_qualidade_vinho(caracteristicas):
+    # Normalizando as características
+    carac_norm = scaler.transform([caracteristicas])
+
+    # Previsões
+    rna_pred = rna_model.predict(carac_norm)[0][0]
+    cluster = kmeans.predict(carac_norm)[0]
+
+    # Criando descrição
+    row = pd.Series(caracteristicas, index=data.drop(['Qualidade', 'descricao'], axis=1).columns)
+    descricao = criar_descricao_vinho(row)
+
+    return {
+        'Probabilidade de Premiação (RNA)': float(rna_pred),
+        'Cluster': int(cluster),
+        'Descrição': descricao
+    }
+
+def prever_qualidade_vinho(caracteristicas):
+    try:
+        # Convertendo características para array numpy
+        carac_array = np.array(caracteristicas).reshape(1, -1)
+
+        # Normalizando as características
+        carac_norm = scaler.transform(carac_array)
+
+        # Fazendo previsões
+        rna_pred = rna_model.predict(carac_norm)[0][0]
+        cluster = kmeans.predict(carac_norm)[0]
+
+        # Criando dicionário com as características
+        carac_dict = {
+            'Acidez Fixa': caracteristicas[0],
+            'Acidez Volátil': caracteristicas[1],
+            'Acido Citrico': caracteristicas[2],
+            'Açucar Residual': caracteristicas[3],
+            'Cloreto': caracteristicas[4],
+            'Dioxido de Enxofre Livre': caracteristicas[5],
+            'Dioxido de Enxofre Total': caracteristicas[6],
+            'Densidade': caracteristicas[7],
+            'pH': caracteristicas[8],
+            'Sulfato': caracteristicas[9],
+            'Alcool': caracteristicas[10]
+        }
+
+        # Gerando descrição
+        descricao = []
+        if carac_dict['Alcool'] > 11:
+            descricao.append('alto teor alcoólico')
+        if carac_dict['Acidez Fixa'] > 7:
+            descricao.append('acidez elevada')
+        if carac_dict['Sulfato'] > 0.6:
+            descricao.append('sulfatos elevados')
+
+        # Verificando se os valores estão dentro das faixas típicas
+        alertas = []
+        faixas_tipicas = {
+            'Acidez Fixa': (4.0, 16.0),
+            'Acidez Volátil': (0.1, 1.6),
+            'Acido Citrico': (0.0, 1.0),
+            'Açucar Residual': (0.6, 65.8),
+            'Cloreto': (0.009, 0.611),
+            'Dioxido de Enxofre Livre': (1, 289),
+            'Dioxido de Enxofre Total': (6, 440),
+            'Densidade': (0.98711, 1.03898),
+            'pH': (2.72, 4.01),
+            'Sulfato': (0.22, 2.0),
+            'Alcool': (8.0, 14.9)
+        }
+
+        for caracteristica, valor in carac_dict.items():
+            min_val, max_val = faixas_tipicas[caracteristica]
+            if valor < min_val or valor > max_val:
+                alertas.append(f"{caracteristica} está fora da faixa típica ({min_val:.3f} - {max_val:.3f})")
+
+        # Interpretando a probabilidade
+        if rna_pred >= 0.7:
+            qualidade = "Alta probabilidade de ser premiado"
+        elif rna_pred >= 0.5:
+            qualidade = "Probabilidade moderada de ser premiado"
+        else:
+            qualidade = "Baixa probabilidade de ser premiado"
+
+        return {
+            'Probabilidade': float(rna_pred),
+            'Probabilidade (%)': float(rna_pred * 100),
+            'Interpretação': qualidade,
+            'Cluster': int(cluster),
+            'Descrição': ' '.join(descricao) if descricao else 'Características padrão',
+            'Alertas': alertas
+        }
+
+    except Exception as e:
+        return {
+            'erro': f"Erro ao processar a previsão: {str(e)}",
+            'tipo_erro': type(e).__name__
+        }
+
+def interface_teste_vinho():
+    print("\nInsira as características do vinho:")
+    caracteristicas = []
+
+    # Lista de características na ordem correta
+    campos = [
+        'Acidez Fixa', 'Acidez Volátil', 'Acido Citrico', 'Açucar Residual',
+        'Cloreto', 'Dioxido de Enxofre Livre', 'Dioxido de Enxofre Total',
+        'Densidade', 'pH', 'Sulfato', 'Alcool'
+    ]
+
+    for campo in campos:
+        while True:
+            try:
+                valor = float(input(f"Digite o valor para {campo}: "))
+                caracteristicas.append(valor)
+                break
+            except ValueError:
+                print("Por favor, insira um número válido.")
+
+    resultado = prever_qualidade_vinho(caracteristicas)
+
+    print("\n=== Resultados da Análise ===")
+    if 'erro' in resultado:
+        print(f"Erro na análise: {resultado['erro']}")
+        print(f"Tipo de erro: {resultado['tipo_erro']}")
+    else:
+        print(f"\nProbabilidade de ser premiado: {resultado['Probabilidade (%)']}%")
+        print(f"Interpretação: {resultado['Interpretação']}")
+        print(f"Grupo (Cluster): {resultado['Cluster']}")
+        print(f"Descrição: {resultado['Descrição']}")
+
+        if resultado['Alertas']:
+            print("\nAlertas:")
+            for alerta in resultado['Alertas']:
+                print(f"- {alerta}")
+
+        # Recomendações baseadas nos alertas
+        if resultado['Alertas']:
+            print("\nRecomendações:")
+            for alerta in resultado['Alertas']:
+                caracteristica = alerta.split()[0]
+                print(f"- Considere ajustar o valor de {caracteristica} para estar dentro da faixa típica")
+
+# Executando a interface (apenas uma vez)
+print("=== Sistema de Análise de Vinhos ===")
+while True:
+    resposta = input("\nDeseja analisar um novo vinho? (s/n): ")
+    if resposta.lower() != 's':
+        break
+    interface_teste_vinho()
+
